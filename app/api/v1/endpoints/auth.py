@@ -1,0 +1,173 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from typing import Optional
+
+from app.models.user import User, UserCreate, Token, TokenData
+from app.services.auth import auth_service
+from app.core.logging import get_logger
+
+logger = get_logger("auth_endpoints")
+
+router = APIRouter()
+
+# OAuth2 scheme for token authentication
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    """Get current authenticated user"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        token_data = auth_service.verify_token(token)
+        if token_data is None:
+            raise credentials_exception
+        
+        user = await auth_service.get_user_by_id(token_data.user_id)
+        if user is None:
+            raise credentials_exception
+        
+        return user
+    except Exception as e:
+        logger.error(f"Authentication error: {e}")
+        raise credentials_exception
+
+
+@router.post("/register", response_model=User)
+async def register(user_create: UserCreate):
+    """Register a new user"""
+    try:
+        # Check if user already exists
+        existing_user = await auth_service.get_user_by_email(user_create.email)
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        # Create user
+        user = await auth_service.create_user(user_create)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user"
+            )
+        
+        logger.info(f"New user registered: {user.email}")
+        return user
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@router.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Login user and return access token"""
+    try:
+        # Authenticate user
+        user = await auth_service.authenticate_user(form_data.username, form_data.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Inactive user"
+            )
+        
+        # Create tokens
+        access_token = auth_service.create_access_token(
+            data={"sub": user.email, "user_id": user.id, "role": user.role}
+        )
+        refresh_token = auth_service.create_refresh_token(
+            data={"sub": user.email, "user_id": user.id, "role": user.role}
+        )
+        
+        logger.info(f"User logged in: {user.email}")
+        return Token(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=30 * 60  # 30 minutes
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_token(refresh_token: str):
+    """Refresh access token using refresh token"""
+    try:
+        # Verify refresh token
+        token_data = auth_service.verify_token(refresh_token)
+        if not token_data:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        # Get user
+        user = await auth_service.get_user_by_id(token_data.user_id)
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user"
+            )
+        
+        # Create new tokens
+        access_token = auth_service.create_access_token(
+            data={"sub": user.email, "user_id": user.id, "role": user.role}
+        )
+        new_refresh_token = auth_service.create_refresh_token(
+            data={"sub": user.email, "user_id": user.id, "role": user.role}
+        )
+        
+        return Token(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            expires_in=30 * 60  # 30 minutes
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@router.get("/profile", response_model=User)
+async def get_profile(current_user: User = Depends(get_current_user)):
+    """Get current user profile"""
+    return current_user
+
+
+@router.post("/logout")
+async def logout(current_user: User = Depends(get_current_user)):
+    """Logout user (invalidate token)"""
+    # In a real implementation, you might want to blacklist the token
+    # For now, we'll just return a success message
+    logger.info(f"User logged out: {current_user.email}")
+    return {"message": "Successfully logged out"} 

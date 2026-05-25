@@ -1,0 +1,9 @@
+import MindMitraApp from './components/MindMitraApp';
+
+function App() {
+  return (
+    <div className="App">
+      <MindMitraApp />
+    </div>
+  );
+}
