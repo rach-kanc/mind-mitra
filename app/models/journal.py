@@ -1,11 +1,5 @@
-"""Journal entry Pydantic models.
-
-Defines request/response schemas for the journaling feature, including
-emotion-analysis metadata returned by the HuggingFace sentiment pipeline.
-"""
-
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,8 +10,8 @@ class JournalEntryBase(BaseModel):
     mood: int = Field(
         ...,
         ge=1,
-        le=5,
-        description="Self-reported mood on a 1 (lowest) to 5 (highest) scale.",
+        le=10,
+        description="Self-reported mood on a 1 (lowest) to 10 (highest) scale.",
     )
     text: str = Field(
         ...,
@@ -46,14 +40,15 @@ class JournalEntryUpdate(BaseModel):
     mood: Optional[int] = Field(
         default=None,
         ge=1,
-        le=5,
-        description="Updated mood value (1-5).",
+        le=10,
+        description="Updated mood value (1-10).",
     )
     text: Optional[str] = Field(
         default=None,
         min_length=1,
         description="Updated journal text.",
     )
+    date: Optional[datetime] = None
 
 
 class JournalEntryResponse(JournalEntryBase):
@@ -92,3 +87,16 @@ class JournalEntryResponse(JournalEntryBase):
     )
 
     model_config = {"from_attributes": True}
+
+
+class MoodHistoryPoint(BaseModel):
+    date: datetime
+    mood: float
+
+
+class MoodHistoryResponse(BaseModel):
+    user_id: str
+    period_days: int
+    average_mood: Optional[float] = None
+    entries: List[MoodHistoryPoint]
+
