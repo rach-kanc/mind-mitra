@@ -9,6 +9,21 @@ import {
   formatConfidence,
   type JournalEntryResponse,
 } from '../../api/journal';
+import { Pagination } from '../../components/Pagination';
+//import type JournalListResponse from '../../api/journal';
+
+//pagination
+interface PaginationMeta {
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_next: boolean;
+  has_prev: boolean;
+  current_page: number;
+  total_pages: number;
+}
+
+
 
 /** Emotion badge component — renders a colored pill with emoji + label + confidence */
 const EmotionBadge: React.FC<{
@@ -92,34 +107,87 @@ const JournalScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
+  const [pagination, setPagination] = useState<PaginationMeta | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
   // Try to get the auth token from localStorage (the app stores it there)
   const getToken = useCallback((): string | null => {
     return localStorage.getItem('token') || null;
   }, []);
 
+  // ── Helper: Extract pagination from headers ────────────────────────────────
+  const extractPaginationFromHeaders = (response: Response, limit: number, offset: number): PaginationMeta => {
+  const totalCount = parseInt(response.headers.get('X-Total-Count') || '0', 10);
+  const hasNext = response.headers.get('X-Has-Next') === 'True';
+  const currentPage = Math.floor(offset / limit) + 1;
+  const totalPages = Math.ceil(totalCount / limit) || 1;
+
+  return {
+    limit,
+    offset,
+    total_count: totalCount,
+    has_next: hasNext,
+    has_prev: offset > 0,
+    current_page: currentPage,
+    total_pages: totalPages,
+  };
+};
+
   // ── Fetch entries on mount ─────────────────────────────────────────────────
-  const loadEntries = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
+ const loadEntries = useCallback(async (page: number = 1, limit: number = 20) => {
+  const token = getToken();
+  if (!token) return;
 
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetchJournalEntries(token);
-      setEntries(res.data);
-    } catch (err: any) {
-      console.error('Failed to fetch journal entries:', err);
-      if (err?.response?.status !== 401) {
-        setError('Failed to load entries');
+  setLoading(true);
+  setError(null);
+  try {
+    const offset = (page - 1) * limit;
+    const response = await fetch(
+      `/api/v1/journal?limit=${limit}&offset=${offset}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
       }
-    } finally {
-      setLoading(false);
-    }
-  }, [getToken]);
+    );
 
-  useEffect(() => {
-    loadEntries();
-  }, [loadEntries]);
+    if (!response.ok) {
+      throw new Error('Failed to fetch journal entries');
+    }
+
+    const data = await response.json();
+    setEntries(data);
+    
+    // Extract pagination from response headers
+    const paginationMeta = extractPaginationFromHeaders(response, limit, offset);
+    setPagination(paginationMeta);
+    
+    setCurrentPage(page);
+    setItemsPerPage(limit);
+  } catch (err: any) {
+    console.error('Failed to fetch journal entries:', err);
+    if (err?.response?.status !== 401) {
+      setError('Failed to load entries');
+    }
+  } finally {
+    setLoading(false);
+  }
+}, [getToken]);
+
+useEffect(() => {
+  loadEntries(1, 20);
+}, [loadEntries]);
+
+// ── Page change handler ────────────────────────────────────────────────────
+const handlePageChange = (newPage: number) => {
+  loadEntries(newPage, itemsPerPage);
+};
+
+// ── Items per page change handler ──────────────────────────────────────────
+const handleLimitChange = (newLimit: number) => {
+  loadEntries(1, newLimit); // Reset to page 1 when changing limit
+};
 
   // ── Save handler ───────────────────────────────────────────────────────────
   const handleSave = async () => {
@@ -134,15 +202,16 @@ const JournalScreen: React.FC = () => {
     setError(null);
     setSaveSuccess(false);
 
-    try {
-      const res = await saveJournalEntry({ mood: currentMood, text: journalText }, token);
-      // Prepend new entry at top of list
-      setEntries(prev => [res.data, ...prev]);
-      setJournalText('');
-      setCurrentMood(3);
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err: any) {
+   try {
+  const res = await saveJournalEntry({ mood: currentMood, text: journalText }, token);
+  setJournalText('');
+  setCurrentMood(3);
+  setSaveSuccess(true);
+  setTimeout(() => setSaveSuccess(false), 3000);
+  // Reload first page to show new entry
+  await loadEntries(1, itemsPerPage);
+}
+     catch (err: any) {
       console.error('Journal save error:', err);
       setError(err?.response?.data?.detail || 'Failed to save entry. Please try again.');
     } finally {
@@ -156,12 +225,19 @@ const JournalScreen: React.FC = () => {
     if (!token) return;
 
     try {
-      await deleteJournalEntry(entryId, token);
-      setEntries(prev => prev.filter(e => e.id !== entryId));
-    } catch (err) {
-      console.error('Delete error:', err);
-      setError('Failed to delete entry');
-    }
+  await deleteJournalEntry(entryId, token);
+  setEntries(prev => prev.filter(e => e.id !== entryId));
+  // If no entries left on this page, go back to previous page
+  if (entries.length === 1 && currentPage > 1) {
+    handlePageChange(currentPage - 1);
+  } else if (entries.length > 0) {
+    // Reload current page to maintain consistency
+    loadEntries(currentPage, itemsPerPage);
+  }
+} catch (err) {
+  console.error('Delete error:', err);
+  setError('Failed to delete entry');
+}
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -255,7 +331,7 @@ const JournalScreen: React.FC = () => {
               Recent Entries
             </h3>
             <button
-              onClick={loadEntries}
+              onClick={() => loadEntries(currentPage, itemsPerPage)}
               disabled={loading}
               className={`p-1.5 rounded-lg transition-colors duration-200 ${
                 darkMode ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-500'
@@ -284,55 +360,71 @@ const JournalScreen: React.FC = () => {
 
           {/* Entry list */}
           {entries.length > 0 && (
-            <div className="space-y-3">
-              {entries.map(entry => (
-                <div
-                  key={entry.id}
-                  className={`p-4 rounded-xl transition-all duration-200 hover:scale-[1.01] ${
-                    darkMode
-                      ? 'bg-gray-700/50 hover:bg-gray-700/80'
-                      : 'bg-gray-50 hover:bg-gray-100'
-                  }`}
-                >
-                  {/* Top row: date + mood + emotion badge */}
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg" title={`Mood: ${entry.mood}/5`}>
-                        {moodEmoji(entry.mood)}
-                      </span>
-                      <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {formatDate(entry.created_at || entry.date)}
-                      </span>
-                    </div>
-                    <EmotionBadge
-                      label={entry.emotion_label}
-                      confidence={entry.emotion_confidence}
-                      analyzed={entry.emotion_analyzed}
-                      darkMode={darkMode}
-                    />
-                  </div>
-
-                  {/* Text preview */}
-                  <p className={`text-sm line-clamp-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {entry.text}
-                  </p>
-
-                  {/* Actions row */}
-                  <div className="flex justify-end mt-2">
-                    <button
-                      onClick={() => handleDelete(entry.id)}
-                      className={`p-1 rounded transition-colors duration-200 opacity-0 group-hover:opacity-100 ${
-                        darkMode ? 'hover:bg-red-900/30 text-red-400' : 'hover:bg-red-50 text-red-400'
-                      }`}
-                      title="Delete entry"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+  <>
+    <div className="space-y-3">
+      {entries.map(entry => (
+        <div
+          key={entry.id}
+          className={`p-4 rounded-xl transition-all duration-200 hover:scale-[1.01] group ${
+            darkMode
+              ? 'bg-gray-700/50 hover:bg-gray-700/80'
+              : 'bg-gray-50 hover:bg-gray-100'
+          }`}
+        >
+          {/* Top row: date + mood + emotion badge */}
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg" title={`Mood: ${entry.mood}/5`}>
+                {moodEmoji(entry.mood)}
+              </span>
+              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                {formatDate(entry.created_at || entry.date)}
+              </span>
             </div>
-          )}
+            <EmotionBadge
+              label={entry.emotion_label}
+              confidence={entry.emotion_confidence}
+              analyzed={entry.emotion_analyzed}
+              darkMode={darkMode}
+            />
+          </div>
+
+          {/* Text preview */}
+          <p className={`text-sm line-clamp-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            {entry.text}
+          </p>
+
+          {/* Actions row */}
+          <div className="flex justify-end mt-2">
+            <button
+              onClick={() => handleDelete(entry.id)}
+              className={`p-1 rounded transition-colors duration-200 opacity-0 group-hover:opacity-100 ${
+                darkMode ? 'hover:bg-red-900/30 text-red-400' : 'hover:bg-red-50 text-red-400'
+              }`}
+              title="Delete entry"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    {/* Pagination Controls */}
+    {pagination && (
+      <Pagination
+        currentPage={pagination.current_page}
+        totalPages={pagination.total_pages}
+        hasNext={pagination.has_next}
+        hasPrev={pagination.has_prev}
+        onPageChange={handlePageChange}
+        onLimitChange={handleLimitChange}
+        itemsPerPage={itemsPerPage}
+        darkMode={darkMode}
+      />
+    )}
+  </>
+)}
         </div>
       </div>
     </div>

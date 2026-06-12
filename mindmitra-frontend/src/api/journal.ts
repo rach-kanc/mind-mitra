@@ -42,6 +42,23 @@ export interface JournalEntryUpdate {
   text?: string;
 }
 
+export interface PaginationMeta {
+  limit: number;
+  offset: number;
+  total_count: number;
+  has_next: boolean;
+  has_prev: boolean;
+  current_page: number;
+  total_pages: number;
+}
+
+export interface JournalListResponse {
+  data: JournalEntryResponse[];
+  pagination: PaginationMeta;
+}
+
+
+
 // ── Emotion display helpers ──────────────────────────────────────────────────
 
 /** Map emotion labels to emoji and color config */
@@ -73,10 +90,38 @@ const authHeaders = (token: string) => ({
   headers: { Authorization: `Bearer ${token}` },
 });
 
-/** Fetch all journal entries for the authenticated user */
-export const fetchJournalEntries = async (token: string, limit = 50) =>
-  axios.get<JournalEntryResponse[]>(`/api/v1/journal?limit=${limit}`, authHeaders(token));
+/**
+ * Fetch journal entries with pagination
+ * @param token Auth token
+ * @param limit Number of entries per page (default: 20)
+ * @param offset Starting position (default: 0)
+ */
+export const fetchJournalEntries = async (
+  token: string,
+  limit: number = 20,
+  offset: number = 0
+): Promise<JournalListResponse> => {
+  const response = await fetch(
+    `/api/v1/journal?limit=${limit}&offset=${offset}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
 
+  if (!response.ok) {
+    throw {
+      response: {
+        status: response.status,
+        data: await response.json().catch(() => ({})),
+      },
+    };
+  }
+
+  return response.json();
+};
 /** Create a new journal entry (emotion analysis happens server-side) */
 export const saveJournalEntry = async (entry: JournalEntryCreate, token: string) =>
   axios.post<JournalEntryResponse>('/api/v1/journal', entry, authHeaders(token));
