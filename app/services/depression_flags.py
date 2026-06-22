@@ -87,19 +87,25 @@ class DepressionFlagService:
             and not status.notified_in_window
             and await self._claim_notification_slot(user_id)
         ):
-            try:
-                await self._send_threshold_notifications(user_id)
-            except Exception as e:
-                logger.error(f"Notification failed for {user_id}:{e}")
-                user_doc = await self.users_collection.find_one({"id": user_id})
-                saved_time = user_doc.get("depression_threshold_notified_at") if user_doc else None
-                if saved_time:
-                    await self.users_collection.update_one(
-                    {'id':user_id,"depression_threshold_notified_at": saved_time},
-                    {"$set": {"depression_threshold_notified_at": None}}
-                )
-                raise e
-            status = await self.get_status(user_id)
+            success=False
+            for attempt in range(3):
+                try:
+                    await self._send_threshold_notifications(user_id)
+                    success=True
+                    break
+                except Exception as e:
+                    logger.error(f"Notification failed for {user_id}:{e}")
+                    if attempt==2:
+                        user_doc = await self.users_collection.find_one({"id": user_id})
+                        saved_time = user_doc.get("depression_threshold_notified_at") if user_doc else None
+                        if saved_time:
+                            await self.users_collection.update_one(
+                                {'id':user_id,"depression_threshold_notified_at": saved_time},
+                                {"$set": {"depression_threshold_notified_at": None}}
+                            )
+                        raise e
+            if success:
+                status = await self.get_status(user_id)
 
         return status
 
