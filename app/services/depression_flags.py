@@ -87,7 +87,14 @@ class DepressionFlagService:
             and not status.notified_in_window
             and await self._claim_notification_slot(user_id)
         ):
-            await self._send_threshold_notifications(user_id)
+            try:
+                await self._send_threshold_notifications(user_id)
+            except Exception as e:
+                logger.error("Notification failed for {user_id}:{e}")
+                await self.users_collection.update_one(
+                    {'id':user_id},{"$set": {"depression_threshold_notified_at": None}}
+                )
+                raise e
             status = await self.get_status(user_id)
 
         return status
